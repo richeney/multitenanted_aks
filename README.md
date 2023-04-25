@@ -18,7 +18,47 @@ Per customer resources
 
 ## Prereqs
 
-Need minimum of Azure CLI 2.47.0 with aks-preview extension. Bash assumed - tested on Ubuntu in WSL2.
+### Bash
+
+Bash environment is assumed. Tested on Ubuntu in WSL2.
+
+- [Azure CLI](https://aka.ms/installtheazurecli)
+  - Minimum version is 2.47.0
+  - aks-preview extension
+
+    ```bash
+    az extension add --name aks-preview
+    ```
+
+- kubectl
+
+    ```bash
+    sudo az aks install-cli
+    ```
+
+- [kubectx](https://github.com/ahmetb/kubectx) (optional)
+
+    Enables fuzzy `kubectl ctx` and `kubectl ns` to switch context and namespace.
+
+    Install [krew](https://krew.sigs.k8s.io/docs/user-guide/setup/install) first.
+
+    Use krew to install the two extensions, and add [fzf](https://github.com/junegunn/fzf#installation).
+
+    ```bash
+    kubectl krew install ctx
+    kubectl krew install ns
+    sudo apt install fzf
+    ```
+
+- [Helm](https://helm.sh/docs/intro/install)
+
+    ```bash
+    curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+    chmod 700 get_helm.sh
+    ./get_helm.sh
+    ```
+
+### Register AzureOverlayPreview feature
 
 ```bash
 az feature register --namespace "Microsoft.ContainerService" --name "AzureOverlayPreview"
@@ -47,6 +87,7 @@ export AZURE_DEFAULTS_GROUP=${AKS_CLUSTER}
 export AZURE_DEFAULTS_LOCATION="uksouth"
 export SUBSCRIPTION="$(az account show --query id --output tsv)"
 export SUBSTR=$(cut -f1 -d\- <<<${SUBSCRIPTION})
+export CUSTOMERS="alpha beta"
 ```
 
 ## Create AKS cluster
@@ -58,34 +99,170 @@ az network vnet create  --name "${AKS_CLUSTER}-vnet" --address-prefixes "172.17.
   --subnet-name "${AKS_CLUSTER}-node-subnet" --subnet-prefixes 172.17.1.0/27
 
 SUBNET_ID=$(az network vnet subnet show --name "${AKS_CLUSTER}-node-subnet" --vnet-name "${AKS_CLUSTER}-vnet" --query id -otsv)
+```
 
+Create the cluster
+
+```bash
 az aks create --name "${AKS_CLUSTER}" \
   --node-count 3 --zones 1 2 3 \
   --enable-oidc-issuer --enable-workload-identity \
   --network-plugin azure --network-policy calico \
   --network-plugin-mode overlay --pod-cidr "10.244.0.0/16" \
   --vnet-subnet-id "${SUBNET_ID}"
-
-  ## --enable-azure-rbac --aad-admin-group-object-ids --attach-acr
-
-
-export AKS_OIDC_ISSUER="$(az aks show --name ${AKS_CLUSTER} --query "oidcIssuerProfile.issuerUrl" -otsv)"
-
-az aks get-credentials --name ${AKS_CLUSTER}
 ```
 
-## Create resources for customers
-
-## **YOU ARE HERE - enable RBAC on the KV**
+Check that the cluster is un Azure CNI Overlay mode and using the manually created virtual network:
 
 ```bash
-for customer in alpha beta
+az aks show --name "${AKS_CLUSTER}" --query networkProfile --output yamlc
+```
+
+Merge credentials into ~/.kube/config.
+
+```bash
+az aks get-credentials --name "${AKS_CLUSTER}"
+```
+
+Check cluster access.
+
+```bash
+kubectl get nodes
+```
+
+Example output.
+
+```text
+NAME                                STATUS     ROLES   AGE     VERSION
+aks-nodepool1-24813231-vmss000000   NotReady   agent   2d20h   v1.25.6
+aks-nodepool1-24813231-vmss000001   NotReady   agent   2d20h   v1.25.6
+aks-nodepool1-24813231-vmss000002   NotReady   agent   2d20h   v1.25.6
+```
+
+## Create customer resources
+
+Grab the OpenID Connect issuer URL.
+
+```bash
+export AKS_OIDC_ISSUER="$(az aks show --name "${AKS_CLUSTER}" --query "oidcIssuerProfile.issuerUrl" -otsv)"
+```
+
+Create the Azure resources
+
+```bash
+for customer in ${CUSTOMERS:-alpha beta}
 do
-  CUSTOMER="${AZURE_DEFAULTS_GROUP}-$customer"
-  KEY_VAULT_NAME="${AZURE_DEFAULTS_GROUP}-${SUBSTR}-${CUSTOMER}
-  az group create --name "${CUSTOMER}"
-  az identity create --name "${CUSTOMER}" --resource-group "${CUSTOMER}"
-  az keyvault create --name "${KEY_VAULT_NAME}" --resource-group "${CUSTOMER}"
-  az keyvault secret set --vault-name "${KEY_VAULT_NAME}" --name "customer-name" --value "${customer}"
-  export USER_ASSIGNED_CLIENT_ID="$(az identity show --name "${CUSTOMER}" --resource-group "${CUSTOMER}" --query 'clientId' -otsv)"
+  (
+    az group create --name "${AZURE_DEFAULTS_GROUP}-${customer}"
+    identity="${AZURE_DEFAULTS_GROUP}-${customer}"
+
+    export AZURE_DEFAULTS_GROUP="${AZURE_DEFAULTS_GROUP}-${customer}"
+
+    az identity create --name "${identity}"
+
+    az keyvault create --name "${identity}-kv" --retention-days 7
+    vault_uri=$(az keyvault show --name "${identity}-kv" --query properties.vaultUri -otsv)
+
+    client_id=$(az identity show --name "${identity}" --query clientId -otsv)
+    az keyvault set-policy --name "${identity}-kv" --secret-permissions get --spn ${client_id}
+
+    az keyvault secret set --vault-name "${identity}-kv" --name "my-secret" --value "Hello ${customer}!"
+
+    az identity federated-credential create --name "${identity}-aad" \
+      --identity-name "${identity}" \
+      --issuer "${AKS_OIDC_ISSUER}" \
+      --subject system:serviceaccount:"${customer}":"${identity}" \
+      --audience api://AzureADTokenExchange
+  )
 done
+```
+
+> The parentheses means each loop iteration runs in a subshell. Any variables (or env var changes) will be discarded at the end of the loop. Changing AZURE_DEFAULTS_GROUP only defaults --resource-group to the customer one for the duration of the loop iteration.
+
+## Generate kubernetes yaml files
+
+This section creates a directory for each customer, plus yaml files for the service account and a simple pod that uses the MSAL library in Go. ([Source code](https://github.com/Azure/azure-workload-identity/blob/main/examples/msal-go/main.go).)
+
+```bash
+for customer in ${CUSTOMERS:-alpha beta}
+do
+  (
+    kubectl create namespace $customer
+    identity="$AZURE_DEFAULTS_GROUP-$customer"
+    export AZURE_DEFAULTS_GROUP=$identity
+    client_id=$(az identity show --name $identity --query clientId -otsv)
+    vault_uri=$(az keyvault show --name $identity-kv --query properties.vaultUri -otsv)
+
+    [[ -d $identity ]] || mkdir $identity
+    cd $identity
+
+    cat > service_account.yaml <<EOF1
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  annotations:
+    azure.workload.identity/client-id: "${client_id}"
+  name: "${identity}"
+  namespace: "${customer}"
+EOF1
+
+    cat > pod.yaml" <<EOF2
+apiVersion: v1
+kind: Pod
+metadata:
+  name: msal-go
+  namespace: ${customer}
+  labels:
+    azure.workload.identity/use: "true"
+spec:
+  serviceAccountName: ${identity}
+  containers:
+    - image: ghcr.io/azure/azure-workload-identity/msal-go
+      name: oidc
+      env:
+      - name: KEYVAULT_URL
+        value: ${vault_uri}
+      - name: SECRET_NAME
+        value: my-secret
+  nodeSelector:
+    kubernetes.io/os: linux
+EOF2
+
+
+  kubectl apply -f service_account.yaml"
+  kubectl apply -f pod.yaml"
+  )
+done
+```
+
+## Check the logs for a pod
+
+kubectl config set-context --current --namespace=alpha
+kubectl get pods
+kubectl describe pod msal-go
+
+```text
+Environment:
+  KEYVAULT_URL:                https://richeneyaks-beta-kv.vault.azure.net/
+  SECRET_NAME:                 my-secret
+  AZURE_CLIENT_ID:             cf37a6f2-8e00-494e-831f-59b1823f82da
+  AZURE_TENANT_ID:             3c584bbd-915f-4c70-9f2e-7217983f22f6
+  AZURE_FEDERATED_TOKEN_FILE:  /var/run/secrets/azure/tokens/azure-identity-token
+  AZURE_AUTHORITY_HOST:        https://login.microsoftonline.com/
+```
+
+Note that Azure workload identity has pulled through additional env vars via the ServiceAccount.
+
+```bash
+kubectl logs msal-go
+```
+
+The pod logs the secret value from the Key Vault once per minute. Below is the live log as seen from the Azure Portal
+
+## Secrets Store CSI Driver
+
+Install the [Secrets Store CSI Driver](https://secrets-store-csi-driver.sigs.k8s.io/getting-started/installation.html)
+
+```bash
+helm repo add secrets-store-csi-driver https://kubernetes-sigs.github.io/secrets-store-csi-driver/charts
+helm install csi-secrets-store secrets-store-csi-driver/secrets-store-csi-driver --namespace kube-system

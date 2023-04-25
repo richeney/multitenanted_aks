@@ -11,6 +11,7 @@ Later - use YADA with private endpointed SQL
 <https://learn.microsoft.com/en-us/azure/key-vault/general/quick-create-cli>
 <https://github.com/microsoft/YADA>
 <https://www.linkedin.com/pulse/use-workload-identity-preview-secrets-store-csi-arana-escobedo/>
+<https://secrets-store-csi-driver.sigs.k8s.io/getting-started/usage.html>
 <https://azure.github.io/secrets-store-csi-driver-provider-azure/docs/>
 <https://learn.microsoft.com/en-us/azure/aks/csi-secrets-store-identity-access>
 
@@ -43,41 +44,10 @@ Check that the cluster is un Azure CNI Overlay mode and using the manually creat
 az aks show --name $AKS_CLUSTER --query networkProfile --output yamlc
 ```
 
-Example output:
+Check that the cluster is un Azure CNI Overlay mode and using the manually created virtual network:
 
-```yaml
-dnsServiceIp: 10.0.0.10
-dockerBridgeCidr: 172.17.0.1/16
-ipFamilies:
-- IPv4
-kubeProxyConfig: null
-loadBalancerProfile:
-  allocatedOutboundPorts: null
-  backendPoolType: nodeIPConfiguration
-  effectiveOutboundIPs:
-  - id: <snip>/providers/Microsoft.Network/publicIPAddresses/562e450d-cb85-471c-ab36-2973d2add871
-    resourceGroup: MC_richeneyaks_richeneyaks_uksouth
-  enableMultipleStandardLoadBalancers: null
-  idleTimeoutInMinutes: null
-  managedOutboundIPs:
-    count: 1
-    countIpv6: null
-  outboundIPs: null
-  outboundIpPrefixes: null
-loadBalancerSku: Standard
-natGatewayProfile: null
-networkDataplane: azure
-networkMode: null
-networkPlugin: azure
-networkPluginMode: overlay
-networkPolicy: calico
-outboundType: loadBalancer
-podCidr: 10.244.0.0/16
-podCidrs:
-- 10.244.0.0/16
-serviceCidr: 10.0.0.0/16
-serviceCidrs:
-- 10.0.0.0/16
+```bash
+az aks show --name $AKS_CLUSTER --query networkProfile --output yamlc
 ```
 
 Merge credentials into ~/.kube/config.
