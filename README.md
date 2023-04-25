@@ -264,5 +264,24 @@ The pod logs the secret value from the Key Vault once per minute. Below is the l
 Install the [Secrets Store CSI Driver](https://secrets-store-csi-driver.sigs.k8s.io/getting-started/installation.html)
 
 ```bash
-helm repo add secrets-store-csi-driver https://kubernetes-sigs.github.io/secrets-store-csi-driver/charts
-helm install csi-secrets-store secrets-store-csi-driver/secrets-store-csi-driver --namespace kube-system
+helm repo add csi-secrets-store-provider-azure https://azure.github.io/secrets-store-csi-driver-provider-azure/charts
+helm install csi csi-secrets-store-provider-azure/csi-secrets-store-provider-azure --namespace kube-system
+```
+
+kubectl get pods -l app=csi-secrets-store-provider-azure -A
+
+NAMESPACE     NAME                                         READY   STATUS    RESTARTS   AGE
+kube-system   csi-csi-secrets-store-provider-azure-cfvlk   1/1     Running   0          3m18s
+kube-system   csi-csi-secrets-store-provider-azure-qf4gx   1/1     Running   0          3m18s
+kube-system   csi-csi-secrets-store-provider-azure-zkswx   1/1     Running   0          3m18s
+
+kubectl get secretproviderclasses
+kubectl describe secretproviderclasses richeneyaks-alpha-secrets
+
+      envFrom:
+        - secretRef:
+            name: secret-info
+
+kubectl exec --stdin --tty secret -- /bin/bash
+ls -l /mnt/secrets-store
+cat /mnt/secrets-store/my-secret; echo
