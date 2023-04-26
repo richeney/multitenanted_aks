@@ -6,6 +6,7 @@ AKS cluster with
 
 - OIDC
 - workload identity support
+- Azure Key Vault Provider for Secrets Store CSI Driver support
 - Azure CNI Overlay
 - Calico network policy
 
@@ -107,6 +108,7 @@ Create the cluster
 az aks create --name "${AKS_CLUSTER}" \
   --node-count 3 --zones 1 2 3 \
   --enable-oidc-issuer --enable-workload-identity \
+  --enable-addons azure-keyvault-secrets-provider \
   --network-plugin azure --network-policy calico \
   --network-plugin-mode overlay --pod-cidr "10.244.0.0/16" \
   --vnet-subnet-id "${SUBNET_ID}"
@@ -193,10 +195,10 @@ do
     client_id=$(az identity show --name $identity --query clientId -otsv)
     vault_uri=$(az keyvault show --name $identity-kv --query properties.vaultUri -otsv)
 
-    [[ -d $identity ]] || mkdir $identity
-    cd $identity
+    [[ -d $customer ]] || mkdir $customer
+    cd $customer
 
-    cat > service_account.yaml <<EOF1
+    cat > service_account.yml <<EOF1
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -206,7 +208,7 @@ metadata:
   namespace: "${customer}"
 EOF1
 
-    cat > pod.yaml" <<EOF2
+    cat > pod.yml" <<EOF2
 apiVersion: v1
 kind: Pod
 metadata:
@@ -229,8 +231,8 @@ spec:
 EOF2
 
 
-  kubectl apply -f service_account.yaml"
-  kubectl apply -f pod.yaml"
+  kubectl apply -f service_account.yml"
+  kubectl apply -f pod.yml"
   )
 done
 ```
@@ -275,6 +277,14 @@ kube-system   csi-csi-secrets-store-provider-azure-cfvlk   1/1     Running   0  
 kube-system   csi-csi-secrets-store-provider-azure-qf4gx   1/1     Running   0          3m18s
 kube-system   csi-csi-secrets-store-provider-azure-zkswx   1/1     Running   0          3m18s
 
+Add secrets
+
+identity="richeneyaks-alpha"
+az keyvault secret set --vault-name "${identity}-kv" --name "food" --value "aubergine"
+az keyvault secret set --vault-name "${identity}-kv" --name "car" --value "Abarth"
+az keyvault secret set --vault-name "${identity}-kv" --name "city" --value "Aberdeen"
+
+
 kubectl get secretproviderclasses
 kubectl describe secretproviderclasses richeneyaks-alpha-secrets
 
@@ -283,5 +293,8 @@ kubectl describe secretproviderclasses richeneyaks-alpha-secrets
             name: secret-info
 
 kubectl exec --stdin --tty secret -- /bin/bash
-ls -l /mnt/secrets-store
-cat /mnt/secrets-store/my-secret; echo
+grep ^ /mnt/secrets-store/*
+env | grep APP
+exit
+
+kubectl exec -i -t secret -- /bin/sh -c 'grep ^ /mnt/secrets-store/*; env | grep APP'

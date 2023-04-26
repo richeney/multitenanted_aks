@@ -1,0 +1,12 @@
+# Use config map for not-secret configuration data
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alpha
+  labels:
+    customer: alpha
+    env: true
+data:
+  APP_CUSTOMER: alpha
+  APP_ENV: production

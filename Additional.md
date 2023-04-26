@@ -13,6 +13,7 @@ Later - use YADA with private endpointed SQL
 <https://www.linkedin.com/pulse/use-workload-identity-preview-secrets-store-csi-arana-escobedo/>
 <https://secrets-store-csi-driver.sigs.k8s.io/getting-started/usage.html>
 <https://azure.github.io/secrets-store-csi-driver-provider-azure/docs/>
+<https://learn.microsoft.com/en-us/azure/aks/csi-secrets-store-driver>
 <https://learn.microsoft.com/en-us/azure/aks/csi-secrets-store-identity-access>
 
 ## Prereqs
