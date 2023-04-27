@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    run: web
+    azure.workload.identity/use: "true"
+  name: web
+  namespace: beta
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      run: web
+  template:
+    metadata:
+      labels:
+        run: web
+    spec:
+      serviceAccountName: richeneyaks-beta
+      containers:
+      - image: erjosito/yadaweb:1.0
+        name: web
+        ports:
+        - containerPort: 80
+          protocol: TCP
+        env:
+        - name: API_URL
+          value: "http://api:8080"
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: beta
+spec:
+  type: LoadBalancer
+  ports:
+  - port: 80
+    targetPort: 80
+  selector:
+    run: web

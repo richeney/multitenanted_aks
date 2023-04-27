@@ -15,6 +15,8 @@ Later - use YADA with private endpointed SQL
 <https://azure.github.io/secrets-store-csi-driver-provider-azure/docs/>
 <https://learn.microsoft.com/en-us/azure/aks/csi-secrets-store-driver>
 <https://learn.microsoft.com/en-us/azure/aks/csi-secrets-store-identity-access>
+https://kubernetes.github.io/ingress-nginx/user-guide/basic-usage/
+https://learn.microsoft.com/en-us/azure/aks/ingress-basic?tabs=azure-cli
 
 ## Prereqs
 

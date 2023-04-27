@@ -298,3 +298,66 @@ env | grep APP
 exit
 
 kubectl exec -i -t secret -- /bin/sh -c 'grep ^ /mnt/secrets-store/*; env | grep APP'
+
+## YADA
+
+```bash
+for customer in beta
+do
+  (
+    export AZURE_DEFAULTS_GROUP=$AZURE_DEFAULTS_GROUP-$customer
+    sql_server_name=richeneyaks-$customer-sql
+    sql_db_name=mydb
+    sql_username=azure
+    sql_password=$(openssl rand -base64 10)  # 10-character random password
+    echo $sql_password
+
+    az sql server create --name $sql_server_name --admin-user "$sql_username" --admin-password "$sql_password"
+    # az sql db create --name $sql_db_name --server $sql_server_name -g $rg -e Basic -c 5 --no-wait
+
+    az sql db create --server $sql_server_name --name $sql_db_name \
+      --edition GeneralPurpose --compute-model Serverless --family Gen5 \
+      --min-capacity 0.5 --capacity 2 --auto-pause-delay 720
+
+    sql_server_fqdn=$(az sql server show --name $sql_server_name --query fullyQualifiedDomainName -otsv)
+
+    echo $sql_server_fqdn
+  )
+done
+```
+
+EjHl/fLxkZdASQ==
+richeneyaks-beta-sql.database.windows.net
+
+Example api.yml and web.yml - construct
+Move secrets into keyvault
+
+kubectl get pods
+kubectl exec --stdin --tty api-57d84f95fd-gqzlk -- /bin/bash
+curl http://api:8080/api/healthcheck
+curl http://web
+
+## Ingress
+
+```bash
+kubectl create namespace ingress-basic
+
+helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+helm repo update
+
+helm install ingress-nginx ingress-nginx/ingress-nginx \
+  --create-namespace \
+  --namespace ingress-basic \
+  --set controller.service.annotations."service\.beta\.kubernetes\.io/azure-load-balancer-health-probe-request-path"=/healthz
+```
+
+/git/multitenanted_aks/beta (main) $ kubectl get svc -ningress-basic
+NAME                                 TYPE           CLUSTER-IP     EXTERNAL-IP     PORT(S)                      AGE
+ingress-nginx-controller             LoadBalancer   10.0.14.42     51.142.209.17   80:30659/TCP,443:30122/TCP   36s
+ingress-nginx-controller-admission   ClusterIP      10.0.112.111   <none>          443/TCP                      36s
+
+```bash
+kubectl create namespace ingress
+
+
+```
