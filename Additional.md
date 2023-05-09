@@ -17,6 +17,10 @@ Later - use YADA with private endpointed SQL
 <https://learn.microsoft.com/en-us/azure/aks/csi-secrets-store-identity-access>
 https://kubernetes.github.io/ingress-nginx/user-guide/basic-usage/
 https://learn.microsoft.com/en-us/azure/aks/ingress-basic?tabs=azure-cli
+https://learn.microsoft.com/azure/aks/web-app-routing?tabs=without-osm
+https://paulyu.dev/article/managed-ingress-on-aks/
+https://github.com/Azure-Samples/azure-opensource-labs#azure-open-source-labs
+https://github.com/Azure-Samples/azure-opensource-labs/tree/main/cloud-native/aks-webapp-routing
 
 ## Prereqs
 

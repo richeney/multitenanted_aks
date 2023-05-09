@@ -5,10 +5,13 @@
 AKS cluster with
 
 - OIDC
-- workload identity support
-- Azure Key Vault Provider for Secrets Store CSI Driver support
+- workload identity support (preview)
+- Web app routing (preview)
+  - Azure Key Vault Provider for Secrets Store CSI Driver support
+  - Azure Key Vault with self signed cert
 - Azure CNI Overlay
 - Calico network policy
+
 
 Per customer resources
 
@@ -59,6 +62,8 @@ Bash environment is assumed. Tested on Ubuntu in WSL2.
     ./get_helm.sh
     ```
 
+    Needed with web application routing?
+
 ### Register AzureOverlayPreview feature
 
 ```bash
@@ -79,42 +84,107 @@ az provider register --namespace Microsoft.ContainerService
 
 ## Variables
 
-Use "akswi" as a prefix throughout. Use first 8 characters of the subscription in FQDNs.
+Set PREFIX to ensure unique Azure resource FQDNs, e.g. key vaults. DNS_HOSTNAME will be used for Web Application Routing, DNS Zones and the self signed SSL certificate.
 
 ```bash
 export PREFIX="richeney"
+export DNS_ZONE="azurecitadel.com"
+export AZURE_DEFAULTS_LOCATION="uksouth"
+export CUSTOMERS="alpha beta"
+```
+
+Create the SSL files.
+
+```bash
+openssl req -new -x509 -nodes -out aks-ingress-tls.crt -keyout aks-ingress-tls.key \
+  -subj "/CN=${DNS_HOSTNAME}" -addext "subjectAltName=DNS:${DNS_HOSTNAME}"
+
+openssl pkcs12 -export -in aks-ingress-tls.crt -inkey aks-ingress-tls.key \
+  -out aks-ingress-tls.pfx
+```
+
+> ⚠️ Only hit enter when prompted for a password if you are running a test cluster.
+
+Derived additional variables.
+
+```bash
 export AKS_CLUSTER="${PREFIX}aks"
 export AZURE_DEFAULTS_GROUP=${AKS_CLUSTER}
-export AZURE_DEFAULTS_LOCATION="uksouth"
 export SUBSCRIPTION="$(az account show --query id --output tsv)"
-export SUBSTR=$(cut -f1 -d\- <<<${SUBSCRIPTION})
-export CUSTOMERS="alpha beta"
+export KEY_VAULT_NAME="${AKS_CLUSTER}-kv"
 ```
 
 ## Create AKS cluster
 
+### Resource group and resources
+
 ```bash
 az group create --name "${AZURE_DEFAULTS_GROUP}"
 
-az network vnet create  --name "${AKS_CLUSTER}-vnet" --address-prefixes "172.17.1.0/24" \
-  --subnet-name "${AKS_CLUSTER}-node-subnet" --subnet-prefixes 172.17.1.0/27
+az network nsg create --name "${AKS_CLUSTER}-node-subnet-nsg"
+
+az network nsg rule create --name "AllowHTTPandHTTPS" \
+  --nsg-name "${AKS_CLUSTER}-node-subnet-nsg" --priority 101 \
+  --destination-port-ranges 80 8080 443 8443 --protocol Tcp
+
+az network vnet create --name "${AKS_CLUSTER}-vnet" --address-prefixes "172.17.1.0/24"
+
+az network vnet subnet create --name "${AKS_CLUSTER}-node-subnet" \
+  --vnet-name "${AKS_CLUSTER}-vnet" --address-prefixes 172.17.1.0/27 \
+  --network-security-group "${AKS_CLUSTER}-node-subnet-nsg"
 
 SUBNET_ID=$(az network vnet subnet show --name "${AKS_CLUSTER}-node-subnet" --vnet-name "${AKS_CLUSTER}-vnet" --query id -otsv)
+
+az keyvault create --name ${KEY_VAULT_NAME} --retention-days 7
+az keyvault certificate import --vault-name ${KEY_VAULT_NAME} -n "${AKS_CLUSTER}-tls" -f aks-ingress-tls.pfx
 ```
 
-Create the cluster
+## DNS Zone
+
+```bash
+DNS_ZONE_RG="azurecitadel"
+```
+
+Reuse your existing one if it exists. If not, create.
+
+```bash
+az network dns zone create --name ${DNS_ZONE} --resource-group ${DNS_ZONE_RG}
+```
+
+Grab the DNS Zone's resource ID.
+
+```bash
+DNS_ZONE_ID=$(az network dns zone show --name ${DNS_ZONE} --resource-group ${DNS_ZONE_RG} --query id -otsv)
+```
+
+If you need to update
+az aks addon update --name ${AKS_CLUSTER} --addon web_application_routing --dns-zone-resource-id=${DNS_ZONE_ID}
+```
+
+### Create the AKS cluster itself
 
 ```bash
 az aks create --name "${AKS_CLUSTER}" \
-  --node-count 3 --zones 1 2 3 \
+  --node-count 1 --zones 1 2 3 \
   --enable-oidc-issuer --enable-workload-identity \
-  --enable-addons azure-keyvault-secrets-provider \
+  --enable-addons azure-keyvault-secrets-provider,web_application_routing \
+  --enable-secret-rotation --dns-zone-resource-id=${DNS_ZONE_ID} \
   --network-plugin azure --network-policy calico \
   --network-plugin-mode overlay --pod-cidr "10.244.0.0/16" \
-  --vnet-subnet-id "${SUBNET_ID}"
+  --vnet-subnet-id "${SUBNET_ID}" \
+  --generate-ssh-keys
 ```
 
-Check that the cluster is un Azure CNI Overlay mode and using the manually created virtual network:
+Assign the DNS ZONE Contributor role and a Key Vault access policy to read certs and secrets.
+
+```bash
+WEBAPPROUTING_OBJECT_ID=$(az aks show --name ${AKS_CLUSTER} --query ingressProfile.webAppRouting.identity.objectId -o tsv)
+az role assignment create --role "DNS Zone Contributor" --assignee ${WEBAPPROUTING_OBJECT_ID} --scope ${DNS_ZONE_ID}
+az keyvault set-policy --name ${KEY_VAULT_NAME} --object-id ${WEBAPPROUTING_OBJECT_ID} --secret-permissions get --certificate-permissions get
+```
+
+
+Check that the cluster is in Azure CNI Overlay mode and using the manually created virtual network:
 
 ```bash
 az aks show --name "${AKS_CLUSTER}" --query networkProfile --output yamlc
@@ -292,7 +362,7 @@ kubectl describe secretproviderclasses richeneyaks-alpha-secrets
         - secretRef:
             name: secret-info
 
-kubectl exec --stdin --tty secret -- /bin/bash
+kubectl exec --stdin --tty <containername> -- /bin/bash
 grep ^ /mnt/secrets-store/*
 env | grep APP
 exit
@@ -361,3 +431,15 @@ kubectl create namespace ingress
 
 
 ```
+
+
+## Web Application Routing add-on
+
+Preview, but recommended. Switch.
+
+<https://learn.microsoft.com/azure/aks/web-app-routing?tabs=without-osm>
+
+The Web Application Routing add-on deploys the following components:
+
+* **nginx ingress controller**: This ingress controller is exposed to the internet.
+* **external-dns controller**: This controller watches for Kubernetes ingress resources and creates DNS A records in the cluster-specific DNS zone. This is only deployed when you pass in the --dns-zone-resource-id argument.

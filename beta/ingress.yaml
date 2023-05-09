@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    kubernetes.azure.com/tls-cert-keyvault-uri: https://richeneyaks-kv.vault.azure.net/certificates/richeneyaks-tls
+  name: beta
+  namespace: beta
+spec:
+  ingressClassName: webapprouting.kubernetes.azure.com
+  rules:
+  - host: beta.azurecitadel.com
+    http:
+      paths:
+      - backend:
+          service:
+            name: web
+            port:
+              number: 80
+        path: /
+        pathType: Prefix
+  tls:
+  - hosts:
+    - beta.azurecitadel.com
+    secretName: richeneyaks-beta-tls
