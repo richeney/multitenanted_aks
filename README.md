@@ -12,7 +12,6 @@ AKS cluster with
 - Azure CNI Overlay
 - Calico network policy
 
-
 Per customer resources
 
 - Kubernetes namespace
@@ -91,9 +90,14 @@ export PREFIX="richeney"
 export DNS_ZONE="azurecitadel.com"
 export AZURE_DEFAULTS_LOCATION="uksouth"
 export CUSTOMERS="alpha beta"
+
+export AKS_CLUSTER="${PREFIX}aks"
+export AZURE_DEFAULTS_GROUP=${AKS_CLUSTER}
+export SUBSCRIPTION="$(az account show --query id --output tsv)"
+export KEY_VAULT_NAME="${AKS_CLUSTER}-kv"
 ```
 
-Create the SSL files.
+## SSL files
 
 ```bash
 openssl req -new -x509 -nodes -out aks-ingress-tls.crt -keyout aks-ingress-tls.key \
@@ -104,15 +108,6 @@ openssl pkcs12 -export -in aks-ingress-tls.crt -inkey aks-ingress-tls.key \
 ```
 
 > ⚠️ Only hit enter when prompted for a password if you are running a test cluster.
-
-Derived additional variables.
-
-```bash
-export AKS_CLUSTER="${PREFIX}aks"
-export AZURE_DEFAULTS_GROUP=${AKS_CLUSTER}
-export SUBSCRIPTION="$(az account show --query id --output tsv)"
-export KEY_VAULT_NAME="${AKS_CLUSTER}-kv"
-```
 
 ## Create AKS cluster
 
@@ -131,7 +126,8 @@ az network vnet create --name "${AKS_CLUSTER}-vnet" --address-prefixes "172.17.1
 
 az network vnet subnet create --name "${AKS_CLUSTER}-node-subnet" \
   --vnet-name "${AKS_CLUSTER}-vnet" --address-prefixes 172.17.1.0/27 \
-  --network-security-group "${AKS_CLUSTER}-node-subnet-nsg"
+  --network-security-group "${AKS_CLUSTER}-node-subnet-nsg" \
+  --service-endpoints Microsoft.SQL Microsoft.KeyVault
 
 SUBNET_ID=$(az network vnet subnet show --name "${AKS_CLUSTER}-node-subnet" --vnet-name "${AKS_CLUSTER}-vnet" --query id -otsv)
 
@@ -182,7 +178,6 @@ WEBAPPROUTING_OBJECT_ID=$(az aks show --name ${AKS_CLUSTER} --query ingressProfi
 az role assignment create --role "DNS Zone Contributor" --assignee ${WEBAPPROUTING_OBJECT_ID} --scope ${DNS_ZONE_ID}
 az keyvault set-policy --name ${KEY_VAULT_NAME} --object-id ${WEBAPPROUTING_OBJECT_ID} --secret-permissions get --certificate-permissions get
 ```
-
 
 Check that the cluster is in Azure CNI Overlay mode and using the manually created virtual network:
 
@@ -246,6 +241,26 @@ do
       --subject system:serviceaccount:"${customer}":"${identity}" \
       --audience api://AzureADTokenExchange
   )
+done
+```
+
+## Update federation credential
+
+Run this if you rebuild the cluster as the OIDC issuer will change.
+
+```bash
+
+export AKS_OIDC_ISSUER="$(az aks show --name "${AKS_CLUSTER}" --query "oidcIssuerProfile.issuerUrl" -otsv)"
+
+for customer in ${CUSTOMERS:-alpha beta}
+do
+    identity="${AZURE_DEFAULTS_GROUP}-${customer}"
+    az identity federated-credential create --name "${identity}-aad" \
+      --identity-name "${identity}" \
+      --resource-group "${identity}" \
+      --issuer "${AKS_OIDC_ISSUER}" \
+      --subject system:serviceaccount:"${customer}":"${identity}" \
+      --audience api://AzureADTokenExchange
 done
 ```
 
@@ -375,15 +390,18 @@ kubectl exec -i -t secret -- /bin/sh -c 'grep ^ /mnt/secrets-store/*; env | grep
 for customer in beta
 do
   (
+    identity="${AZURE_DEFAULTS_GROUP}-${customer}"
     export AZURE_DEFAULTS_GROUP=$AZURE_DEFAULTS_GROUP-$customer
-    sql_server_name=richeneyaks-$customer-sql
+    sql_server_name="${identity}-sql"
     sql_db_name=mydb
     sql_username=azure
     sql_password=$(openssl rand -base64 10)  # 10-character random password
     echo $sql_password
 
     az sql server create --name $sql_server_name --admin-user "$sql_username" --admin-password "$sql_password"
-    # az sql db create --name $sql_db_name --server $sql_server_name -g $rg -e Basic -c 5 --no-wait
+
+    SUBNET_ID=$(az network vnet subnet show --name "${AKS_CLUSTER}-node-subnet" --vnet-name "${AKS_CLUSTER}-vnet" --query id -otsv)
+    az sql server vnet-rule create --name "${AKS_CLUSTER}" --server $sql_server_name --subnet $SUBNET_ID
 
     az sql db create --server $sql_server_name --name $sql_db_name \
       --edition GeneralPurpose --compute-model Serverless --family Gen5 \
@@ -391,7 +409,14 @@ do
 
     sql_server_fqdn=$(az sql server show --name $sql_server_name --query fullyQualifiedDomainName -otsv)
 
+
     echo $sql_server_fqdn
+
+    az keyvault secret set --vault-name "${identity}-kv" --name "sql-fqdn" --value "$sql_server_fqdn"
+    az keyvault secret set --vault-name "${identity}-kv" --name "sql-server" --value "$sql_server_name"
+    az keyvault secret set --vault-name "${identity}-kv" --name "sql-dbname" --value "$sql_db_name"
+    az keyvault secret set --vault-name "${identity}-kv" --name "sql-username" --value "$sql_username"
+    az keyvault secret set --vault-name "${identity}-kv" --name "sql-password" --value "$sql_password"
   )
 done
 ```
@@ -406,40 +431,3 @@ kubectl get pods
 kubectl exec --stdin --tty api-57d84f95fd-gqzlk -- /bin/bash
 curl http://api:8080/api/healthcheck
 curl http://web
-
-## Ingress
-
-```bash
-kubectl create namespace ingress-basic
-
-helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-helm repo update
-
-helm install ingress-nginx ingress-nginx/ingress-nginx \
-  --create-namespace \
-  --namespace ingress-basic \
-  --set controller.service.annotations."service\.beta\.kubernetes\.io/azure-load-balancer-health-probe-request-path"=/healthz
-```
-
-/git/multitenanted_aks/beta (main) $ kubectl get svc -ningress-basic
-NAME                                 TYPE           CLUSTER-IP     EXTERNAL-IP     PORT(S)                      AGE
-ingress-nginx-controller             LoadBalancer   10.0.14.42     51.142.209.17   80:30659/TCP,443:30122/TCP   36s
-ingress-nginx-controller-admission   ClusterIP      10.0.112.111   <none>          443/TCP                      36s
-
-```bash
-kubectl create namespace ingress
-
-
-```
-
-
-## Web Application Routing add-on
-
-Preview, but recommended. Switch.
-
-<https://learn.microsoft.com/azure/aks/web-app-routing?tabs=without-osm>
-
-The Web Application Routing add-on deploys the following components:
-
-* **nginx ingress controller**: This ingress controller is exposed to the internet.
-* **external-dns controller**: This controller watches for Kubernetes ingress resources and creates DNS A records in the cluster-specific DNS zone. This is only deployed when you pass in the --dns-zone-resource-id argument.

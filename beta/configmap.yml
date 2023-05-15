@@ -1,9 +1,10 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: alpha
+  name: beta
   labels:
-    customer: alpha
+    customer: beta
 data:
-  APP_CUSTOMER: alpha
+  APP_CUSTOMER: beta
   APP_ENV: production
+  SQL_ENGINE: sqlserver

@@ -1,20 +1,12 @@
-apiVersion: v1
-kind: Secret
-metadata:
-  name: sqlpassword
-  namespace: beta
-stringData:
-  password: "EjHl/fLxkZdASQ=="
-type: Opaque
+
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  labels:
-    azure.workload.identity/use: "true"
-    run: api
   name: api
   namespace: beta
+  labels:
+    run: api
 spec:
   replicas: 1
   selector:
@@ -23,6 +15,7 @@ spec:
   template:
     metadata:
       labels:
+        azure.workload.identity/use: "true"
         run: api
     spec:
       serviceAccountName: richeneyaks-beta
@@ -32,16 +25,38 @@ spec:
         ports:
         - containerPort: 8080
           protocol: TCP
+        envFrom:
+        - configMapRef:
+            name: beta
         env:
-        - name: SQL_SERVER_USERNAME
-          value: "azure"
         - name: SQL_SERVER_FQDN
           value: "richeneyaks-beta-sql.database.windows.net"
+        - name: SQL_SERVER_DB
+          valueFrom:
+            secretKeyRef:
+              name: richeneyaks-beta-secrets-sql
+              key: dbname
+        - name: SQL_SERVER_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: richeneyaks-beta-secrets-sql
+              key: username
         - name: SQL_SERVER_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: sqlpassword
+              name: richeneyaks-beta-secrets-sql
               key: password
+        volumeMounts:
+          - name: secrets-store
+            mountPath: "/mnt/secrets-store"
+            readOnly: true
+      volumes:
+      - name: secrets-store
+        csi:
+          driver: secrets-store.csi.k8s.io
+          readOnly: true
+          volumeAttributes:
+            secretProviderClass: richeneyaks-beta-secrets
       restartPolicy: Always
 ---
 apiVersion: v1
